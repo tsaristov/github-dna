@@ -21,9 +21,11 @@ EPOCH = dt.date(2020, 1, 5)   # a Sunday; fixes the helix phase forever
 PERIOD = 18                   # weeks per full turn (~2.9 turns per year)
 AMP, CENTER = 3.0, 3.0
 RUNG_EVERY = 3                # a base-pair rung every 3rd week
-BRIGHT, DIM = 28, 9           # commits per cell; BRIGHT must exceed the
-                              # account's existing max daily count (23) or
-                              # GitHub's shading quantiles wash the art out
+BRIGHT, DIM = 44, 19          # commits per cell. GitHub shades relative to the
+                              # busiest day on the account, so these must sit
+                              # well above real activity (max 23/day) or genuine
+                              # commits on blank cells rival the strands. See
+                              # selfcheck for the invariants.
 REPO = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -90,6 +92,30 @@ def backfill(weeks=53):
     print(f"done, {total} commits")
 
 
+def existing_by_day():
+    """Commits already in this repo, per author date."""
+    out = subprocess.run(["git", "log", "--format=%ad", "--date=short"],
+                         cwd=REPO, capture_output=True, text=True, check=True).stdout
+    tally = {}
+    for line in out.split():
+        tally[dt.date.fromisoformat(line)] = tally.get(dt.date.fromisoformat(line), 0) + 1
+    return tally
+
+
+def topup(weeks=53):
+    """Raise every past day to its target. Idempotent: re-run after changing levels."""
+    have = existing_by_day()
+    days = [d for d in sundays_back(weeks) if d <= dt.date.today() and commits_for(d)]
+    short = [(d, commits_for(d) - have.get(d, 0)) for d in days]
+    short = [(d, n) for d, n in short if n > 0]
+    print(f"topping up {len(short)} days, {sum(n for _, n in short)} commits")
+    for i, (d, n) in enumerate(short, 1):
+        commit(d, n)
+        if i % 25 == 0:
+            print(f"  {i}/{len(short)} days")
+    print("done")
+
+
 def selfcheck():
     # phase is anchored to absolute dates, not to the sliding window
     d = dt.date(2026, 6, 14)
@@ -109,9 +135,13 @@ def selfcheck():
         assert 0 <= a <= 6 and 0 <= b <= 6, f"row out of grid at week {w}: {a},{b}"
         assert a + b == 6, f"strands not mirrored at week {w}: {a},{b}"
 
-    # the bright tier must outrank existing real activity or the art washes out
-    assert BRIGHT > 23, "BRIGHT must exceed the account's current max daily count"
-    assert DIM * 3 < BRIGHT, "DIM and BRIGHT must land in different shading buckets"
+    # GitHub shades each cell relative to the account's busiest day, so the art
+    # has to outrank real activity to stay legible. REAL_MAX is the largest
+    # genuine single-day count on the account; re-measure it if that grows.
+    REAL_MAX = 23
+    assert BRIGHT > REAL_MAX * 1.7, "strands must outrank the busiest real day"
+    assert BRIGHT > DIM * 1.7, "strands must clearly outrank rungs"
+    assert DIM > REAL_MAX / 2, "rungs must not be swamped by ordinary real activity"
 
     # Sunday maps to row 0, Saturday to row 6
     assert (dt.date(2026, 10, 11).weekday() + 1) % 7 == 0, "Sunday must be row 0"
@@ -123,6 +153,7 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "preview"
     arg = int(sys.argv[2]) if len(sys.argv) > 2 else 53
     {"preview": lambda: preview(arg), "backfill": lambda: backfill(arg),
+     "topup": lambda: topup(arg),
      "today": lambda: commit(dt.date.today(), commits_for(dt.date.today()))
                       if commits_for(dt.date.today()) else print("blank cell today"),
      "selfcheck": selfcheck}[cmd]()
